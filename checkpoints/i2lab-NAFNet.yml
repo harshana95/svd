@@ -1,0 +1,100 @@
+name: Ours-NAFNet
+report_to: comet_ml
+num_gpu: 8
+seed: 10
+mixed_precision: !!str no
+allow_tf32: false
+tracker_project_name: Ours-NAFNet
+
+datasets:
+  train:
+    type: HuggingFaceDataset
+    name: harshana95/synthetic_hybrid_Flickr2k_gt_v2_gaussian_synthetic_PCA
+    split: train
+
+    gt_size: 1024
+    scale: 1
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 4
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val:
+    type: HuggingFaceDataset
+    name: harshana95/synthetic_hybrid_Flickr2k_gt_v2_gaussian_synthetic_PCA
+    split: validation
+    scale: 1
+    gt_size: 1024
+
+# network structures
+network:
+  type: NAFNetLocal
+  width: 32
+  enc_blk_nums: [1, 1, 1, 28]
+  middle_blk_num: 1
+  dec_blk_nums: [1, 1, 1, 1]
+
+# path
+path:
+  root: /scratch/gilbreth/wweligam/experiments
+  logging_dir: logs
+  resume_from_checkpoint: ~
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+#  visualization: visual/ntire2021-demo
+
+# training settings
+train:
+  optim:
+    scale_lr: false
+    use_8bit_adam: false
+    learning_rate: !!float 2e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_weight_decay: 0.01
+    adam_epsilon: !!float 1e-8
+    max_grad_norm: 1.0
+
+  scheduler:
+    type: cosine_with_restarts
+    lr_warmup_steps: 500
+    lr_num_cycles: 3
+    lr_power: 1.0
+  loss: 1*PSNR_loss
+  max_train_steps: 240000
+  gradient_accumulation_steps: 1
+  num_train_epochs: 10
+  batch_size: 1
+  checkpointing_steps: 10000
+  validation_steps: 10000
+  checkpoints_total_limit: 2
+
+# validation settings
+val:
+  val_freq: !!float 5e7
+  save_img: false
+  grids: true
+  crop_size: 256
+  max_minibatch: 8
+
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e4
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

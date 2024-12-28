@@ -2,16 +2,16 @@ import logging
 import torch
 from os import path as osp
 import argparse
-from basicsr.data import create_dataloader, create_dataset
-from basicsr.models import create_model
-from basicsr.utils import (get_env_info, get_root_logger, get_time_str,
+from LD.data import create_dataloader, create_dataset
+from LD.models import create_model
+from LD.utils import (get_env_info, get_root_logger, get_time_str,
                            make_exp_dirs)
-from basicsr.utils import (MessageLogger, check_resume, get_env_info,
+from LD.utils import (MessageLogger, check_resume, get_env_info,
                            get_root_logger, get_time_str, init_tb_logger,
                            init_wandb_logger, make_exp_dirs, mkdir_and_rename,
                            set_random_seed)
-from basicsr.utils.dist_util import get_dist_info, init_dist
-from basicsr.utils.options import dict2str, parse
+from LD.utils.dist_util import get_dist_info, init_dist
+from LD.utils.options import dict2str, parse
 
 def parse_options(is_train=False):
     parser = argparse.ArgumentParser()
@@ -60,7 +60,7 @@ def main():
     make_exp_dirs(opt)
     log_file = osp.join(opt['path']['log'],
                         f"test_{opt['name']}_{get_time_str()}.log")
-    logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
+    logger = get_root_logger(logger_name='LDbasicsr', log_level=logging.INFO, log_file=log_file)
     logger.info(get_env_info())
     logger.info(dict2str(opt))
 

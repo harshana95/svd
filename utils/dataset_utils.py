@@ -113,6 +113,24 @@ class crop_center:
             sample[key] = self.crop(sample[key])
         return sample
 
+class crop_random:
+    def __init__(self, h, w, keys=()):
+        self.h = h
+        self.w = w
+        self.active_keys = keys
+
+    def crop(self, image):
+        h, w = image.shape[-2], image.shape[-1]
+        if h <= self.h and w <= self.w:
+            return image
+        top = np.random.randint(0, h - self.h)
+        left = np.random.randint(0, w - self.w)
+        return image[..., top:top+self.h, left:left+self.w]
+
+    def __call__(self, sample):
+        for key in self.active_keys:
+            sample[key] = self.crop(sample[key])
+        return sample
 
 class fix_image_shape:
     def fix(self, image):

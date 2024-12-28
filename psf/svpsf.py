@@ -60,15 +60,7 @@ class PSFSimulator:
 
         # motion kernel used for generating motion blur
         self.motion = KernelDataset(psf_size, psf_size // 2)
-
-        # xx, yy used for psf_type == 'gaussian' or psf_type == 'disk'
-        self.xx, self.yy = np.meshgrid(np.arange(self.psf_size, dtype='float32'),
-                                       np.arange(self.psf_size, dtype='float32'))
-        self.xx -= self.psf_size // 2
-        self.yy -= self.psf_size // 2
-        self.xx /= self.psf_size
-        self.yy /= self.psf_size
-
+        
         h, w = self.image_shape
         self.R = 0.5 * ((h * h + w * w) ** 0.5)
 
@@ -133,6 +125,21 @@ class PSFSimulator:
         """
         metadata = []
         psf_type = kwargs.get('psf_type')
+        xx_offset, yy_offset = 0, 0
+        chromatic = kwargs.get('chromatic', [0,0,0])[ch]
+        chromatic_trans = kwargs.get('chromatic_trans', [1, 1, 1])[ch]
+        if psf_type == "gaussian" or psf_type == "disk": # xx, yy used for psf_type == 'gaussian' or psf_type == 'disk'
+            if chromatic != 0:
+                xx_offset = (x/self.R)*(self.psf_size/2)*chromatic
+                yy_offset = (y/self.R)*(self.psf_size/2)*chromatic
+                x += int(xx_offset)
+                y += int(yy_offset)
+
+            self.xx, self.yy = np.meshgrid(np.arange(self.psf_size, dtype='float32'), np.arange(self.psf_size, dtype='float32'))
+            self.xx = self.xx - (self.psf_size / 2) + xx_offset
+            self.yy = self.yy - (self.psf_size / 2) + yy_offset
+            self.xx /= self.psf_size/2
+            self.yy /= self.psf_size/2
         if psf_type == 'random':
             psf_type = random.choice(['gaussian', 'motion'])
         if psf_type == 'gaussian':
@@ -142,8 +149,8 @@ class PSFSimulator:
                 s1_scale, s2_scale = sigma_scales_circular(x, y, self.R)
             else:
                 raise Exception("Wrong Gaussian type")
-            sigma1 = kwargs['sigma1'] * s1_scale
-            sigma2 = kwargs['sigma2'] * s2_scale
+            sigma1 = kwargs['sigma1'] * s1_scale * (1 + 0)
+            sigma2 = kwargs['sigma2'] * s2_scale * (1 + chromatic)
             sigma1 = max(sigma1, kwargs.get('sigma_min'))
             sigma2 = max(sigma2, kwargs.get('sigma_min'))
 
@@ -157,7 +164,7 @@ class PSFSimulator:
             A = 1
             psf = A * np.exp(-(a * (self.xx - mu[0]) ** 2 + 2 * b * (self.xx - mu[0]) * (self.yy - mu[1]) + c * (
                     self.yy - mu[1]) ** 2))
-            metadata = [theta, sigma1, sigma2]
+            metadata = [theta, sigma1, sigma2, x, y, xx_offset, yy_offset]
         elif psf_type == 'disk':
             sigma = kwargs.get('sigma', 0.1)
             psf = np.sqrt(self.xx ** 2 + self.yy ** 2) <= sigma
@@ -197,13 +204,8 @@ class PSFSimulator:
             metadata = zvecs[0]
         else:
             raise ValueError("Invalid PSF type.")
-
-        if self.normalize:  # Normalize the PSF to have unit sum
-            psf_sum = np.sum(psf)
-            if psf_sum == 0:
-                psf_sum = 1
-            psf /= psf_sum
-
+            
+        psf *= chromatic_trans
         return psf, np.array(metadata)
 
     def generate_all_psfs(self, nh, nw, inc, outc, **kwargs):
@@ -216,7 +218,8 @@ class PSFSimulator:
 
         @return psfs: np.array (psfs with shape [outc, inc, nh, nw, psf_size, psf_size])
         """
-
+        print(f"Generating PSFs {nh}x{nw} channels {inc}")
+        print(f"kwargs {kwargs}")
         # handle special case when uniform PSFs are needed
         if kwargs.get('is_uniform', False):
             psfs, metadata_arr = [], []
@@ -233,7 +236,7 @@ class PSFSimulator:
 
         # find the PSFs for each object position
         psfs = np.zeros((inc, outc, nh, nw, self.psf_size, self.psf_size))
-        pbar = tqdm(total=inc * outc * nh * nw, desc="Creating PSFs")
+        pbar = tqdm(total=nh * nw, desc="Creating PSFs")
         metadata_arr = None
         max_psf_size = [0, 0]
         position_indices = [(x, y) for x in range(nw) for y in range(nh)]
@@ -246,23 +249,28 @@ class PSFSimulator:
             assert 0 <= x_img <= self.image_shape[1]
 
             # Generate the PSF and store it
-            # move origin to center for easy simulation. remove if this is bad for file
-            psf, metadata = self.generate_psf(x_img - (self.image_shape[1] // 2),
-                                              y_img - (self.image_shape[0] // 2),
-                                              None, **kwargs)
-            metadata = np.concatenate([np.array([y_img, x_img]), metadata])
-            for j in range(outc):
-                psfs[:, j, y, x] = psf if len(psf.shape) == 2 else psf.transpose([2, 0, 1])
-            max_psf_size[0] = max(max_psf_size[0], psf.shape[0])
-            max_psf_size[1] = max(max_psf_size[1], psf.shape[1])
 
-            if metadata_arr is None:
-                metadata_arr = np.zeros((*psfs.shape[:-2], len(metadata)))
             for i in range(inc):
                 for j in range(outc):
+                    # move origin to center for easy simulation. remove if this is bad for file
+                    _x_img, _y_img = x_img - (self.image_shape[1] // 2), y_img - (self.image_shape[0] // 2)
+                    psf, metadata = self.generate_psf(_x_img, _y_img, i, **kwargs)
+                    psfs[i, j, y, x] = psf
+
+                    max_psf_size[0] = max(max_psf_size[0], psf.shape[0])
+                    max_psf_size[1] = max(max_psf_size[1], psf.shape[1])
+
+                    metadata = np.concatenate([np.array([y_img, x_img]), metadata])
+                    if metadata_arr is None:
+                        metadata_arr = np.zeros((*psfs.shape[:-2], len(metadata)))
                     metadata_arr[i][j][y][x] = metadata
-                    pbar.update()
-                    pbar.set_postfix_str(f"x={x:04d} y={y:04d}")
+            if self.normalize:  # Normalize the PSF to have unit sum
+                psf_sum = np.sum(psfs[:,:, y, x])
+                if psf_sum == 0:
+                    psf_sum = 1
+                psfs[:,:, y, x] /= psf_sum/inc
+            pbar.update()
+            pbar.set_postfix_str(f"x={x:04d} y={y:04d}  meta={' '.join([f'{int(abs(m)):02d}' for m in metadata_arr[:,:,y,x, -2:].flatten()])}")
         print(f"Max psf size: {max_psf_size}")
         pbar.close()
         metadata_arr = np.array(metadata_arr).transpose([0, 1, 4, 2, 3])  # inc outc d h w
@@ -302,12 +310,13 @@ class PSFSimulator:
         else:
             assert metadata is not None
             tmp = np.zeros((psfs.shape[0], image_shape[0] + k, image_shape[1] + k))
-            for i in range(psfs.shape[2]):
-                for j in range(psfs.shape[3]):
+            for i in range(0, psfs.shape[2], skip):
+                for j in range(0, psfs.shape[3], skip):
                     psf = psfs[:, q, i, j]
                     y_img, x_img = metadata[0, q, :2, i, j].astype(int)  # use from inc=0, first two elements of the metadata should be y_img, and x_img
                     tmp[:, y_img:y_img + k, x_img:x_img + k] += psf
             # tmp = einops.rearrange(psfs[:, q, ::skip, ::skip], "c H W h w -> c (H h) (W w)")
+        print(f"Displaying PSFs {tmp.shape}")
         plt.imshow(tmp.transpose([1, 2, 0]) / tmp.max())
         plt.title(title + f" max value={tmp.max():.2f} min value={tmp.min():.2f}")
         plt.xlabel('x')

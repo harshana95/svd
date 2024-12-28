@@ -15,7 +15,7 @@ from utils.utils import generate_folder
 
 if __name__ == "__main__":
     DEBUG = False
-    kwargs = {'psf_type': 'gaussian', 'gaussian_type': 'elliptical', 'sigma1': 0.04, 'sigma2': 0.10, 'sigma_min': 0.04}
+    kwargs = {'psf_type': 'gaussian', 'gaussian_type': 'elliptical', 'sigma1': 0.04, 'sigma2': 0.10, 'sigma_min': 0.04, 'chromatic': [0.0,0.5,0.9], 'chromatic_trans': [0.7,0.9,0.7]}
     # kwargs = {'psf_type': 'motion'}
     """
     R: 620-750 nm  685
@@ -23,6 +23,7 @@ if __name__ == "__main__":
     B: 450-495 nm  472.5
     """
     parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--n_channels', type=int, default=3)
     parser.add_argument('--sensor_size', default=(4,4), action='store', type=float, nargs=2)
     parser.add_argument('--sensor_res', default=(1024,1024), action='store', type=int, nargs=2)
     parser.add_argument('--max_psf_size', type=int, default=64)
@@ -58,10 +59,12 @@ if __name__ == "__main__":
                          horizontal_translation=0, vertical_translation=0)
 
     # generate PSFs
-    generated_psf, psf_metadata = psfsim.generate_all_psfs(metadata['grid_size'][0], metadata['grid_size'][1], outc=1, inc=1, **kwargs)
-    psfsim.display_psfs(image_shape=args.sensor_res, psfs=generated_psf, weights=None, metadata=psf_metadata,
-                        title="Gaussian PSFs", skip=20)
-    plt.show()
+    generated_psf, psf_metadata = psfsim.generate_all_psfs(metadata['grid_size'][0], metadata['grid_size'][1], outc=1, inc=args.n_channels, **kwargs)
+    PSFSimulator.display_psfs(image_shape=args.sensor_res, psfs=generated_psf, weights=None, metadata=psf_metadata, title="All PSFs", skip=1)
+    plt.savefig(f"{loc}/psfs.png")
+    PSFSimulator.display_psfs(image_shape=args.sensor_res, psfs=generated_psf, weights=None, metadata=psf_metadata, title="10x10 PSFs", skip=generated_psf.shape[2] // 10)
+    plt.savefig(f"{loc}/psfs_10x10.png")
+    
 
     # saving PSFs
     psfsim.save_psfs(loc, generated_psf, metadata=psf_metadata, H_img=psfsim.H_img, H_obj=psfsim.H_obj)
