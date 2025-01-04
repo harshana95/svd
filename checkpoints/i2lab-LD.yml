@@ -14,11 +14,20 @@ datasets:
 
     gt_size: 1024
     scale: 1
+    resize: 512
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 4
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
+
+    poisson_noise:
+      peak: 1000
+      peak_dc: 50
+    gaussian_noise:
+      max_sigma: 0.02
+      sigma_dc: 0.005
+      mu: 0
 
   val:
     type: HuggingFaceDataset
@@ -26,6 +35,15 @@ datasets:
     split: validation
     scale: 1
     gt_size: 1024
+    resize: 512
+
+    poisson_noise:
+      peak: 1000
+      peak_dc: 50
+    gaussian_noise:
+      max_sigma: 0.02
+      sigma_dc: 0.005
+      mu: 0
 
 # network structures
 network:
@@ -59,12 +77,12 @@ train:
     lr_num_cycles: 3
     lr_power: 1.0
 
-  max_train_steps: 240000
+  max_train_steps: 120000
   gradient_accumulation_steps: 1
   num_train_epochs: 10
   batch_size: 1
-  checkpointing_steps: 1000
-  validation_steps: 1000
+  checkpointing_steps: 10000
+  validation_steps: 10000
   checkpoints_total_limit: 2
 
   # losses

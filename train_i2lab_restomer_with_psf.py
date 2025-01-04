@@ -25,8 +25,8 @@ from huggingface_hub import create_repo, hf_hub_download, upload_folder, delete_
 from tqdm import tqdm
 
 from dataset import create_dataset
-from models.NAFNet import NAFNetConfig, NAFNetModel
-from utils.common_utils import keep_last_checkpoints, initialize, log_image
+from models.Restormer_with_psf import RestormerKConfig, RestormerKModel
+from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
 from utils.loss import Loss
@@ -89,12 +89,7 @@ def main(args):
     # ================================================================================================== 1. Initialize
     accelerator = initialize(args, logger)
 
-    # ============================================================================================== 2. Load models
-    if args.network.type == "NAFNetLocal":
-        config = NAFNetConfig(**args.network)
-        model = NAFNetModel(config)
-
-    # =============================================================================================== 3. Load dataset
+    # =============================================================================================== 2. Load dataset
     # create train and validation dataloaders
     train_set = create_dataset(args.datasets.train)
     dataloader = DataLoader(
@@ -113,6 +108,16 @@ def main(args):
     psf_data = PSFSimulator.load_psfs(args.datasets.train.name, 'PSFs_with_basis.h5')
     basis_psfs = psf_data['basis_psfs'][:]  # [:] is used to load the whole array to memory
     basis_weights = psf_data['basis_weights'][:]
+    
+    # ============================================================================================== 3. Load models
+    if args.network.type == "RestormerK":
+        psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
+        psfs_cropped = einops.rearrange(psfs_cropped, 'b c h w -> 1 (b c) h w')
+        if args.datasets.train.resize is not None:
+            psfs_cropped = torch.nn.functional.interpolate(psfs_cropped, (args.datasets.train.resize, args.datasets.train.resize))
+        psfs_cropped = psfs_cropped.numpy().tolist()
+        config = RestormerKConfig(**args.network, psfs=psfs_cropped)
+        model = RestormerKModel(config)
 
     # ========================================================================================== 4. setup for training
     accelerator.register_save_state_pre_hook(save_model_hook)

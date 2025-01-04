@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+import einops
 import yaml
 from torch.utils.data import DataLoader
 
@@ -108,7 +109,11 @@ def main(args):
 
     # ============================================================================================== 3. Load models
     if args.network.type == "NAFKNet":
-        psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), 256, 256).numpy().tolist()
+        psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
+        psfs_cropped = einops.rearrange(psfs_cropped, 'b c h w -> 1 (b c) h w')
+        if args.datasets.train.resize is not None:
+            psfs_cropped = torch.nn.functional.interpolate(psfs_cropped, (args.datasets.train.resize, args.datasets.train.resize))
+        psfs_cropped = psfs_cropped.numpy().tolist()
         config = NAFKNetConfig(**args.network, psfs=psfs_cropped)
         model = NAFKNetModel(config)
 

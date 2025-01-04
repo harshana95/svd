@@ -25,7 +25,7 @@ from huggingface_hub import create_repo, hf_hub_download, upload_folder, delete_
 from tqdm import tqdm
 
 from dataset import create_dataset
-from models.NAFNet import NAFNetConfig, NAFNetModel
+from models.Restormer import RestormerConfig, RestormerModel
 from utils.common_utils import keep_last_checkpoints, initialize, log_image
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
@@ -89,12 +89,7 @@ def main(args):
     # ================================================================================================== 1. Initialize
     accelerator = initialize(args, logger)
 
-    # ============================================================================================== 2. Load models
-    if args.network.type == "NAFNetLocal":
-        config = NAFNetConfig(**args.network)
-        model = NAFNetModel(config)
-
-    # =============================================================================================== 3. Load dataset
+    # =============================================================================================== 2. Load dataset
     # create train and validation dataloaders
     train_set = create_dataset(args.datasets.train)
     dataloader = DataLoader(
@@ -113,6 +108,11 @@ def main(args):
     psf_data = PSFSimulator.load_psfs(args.datasets.train.name, 'PSFs_with_basis.h5')
     basis_psfs = psf_data['basis_psfs'][:]  # [:] is used to load the whole array to memory
     basis_weights = psf_data['basis_weights'][:]
+    
+    # ============================================================================================== 3. Load models
+    if args.network.type == "Restormer":
+        config = RestormerConfig(**args.network)
+        model = RestormerModel(config)
 
     # ========================================================================================== 4. setup for training
     accelerator.register_save_state_pre_hook(save_model_hook)

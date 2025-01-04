@@ -46,9 +46,6 @@ class ConvEncoder(nn.Module):
         self.conv_7x7 = nn.Conv2d(ndf, ndf, kernel_size=7, padding=0, bias=True)
         
     def forward(self, x):
-        if x.size(2) != 256 or x.size(3) != 256:
-            x = F.interpolate(x, size=(256, 256), mode='bilinear')
-
         x = self.layer1(x) # 128
         x = self.conv_7x7(self.pad_3(self.actvn(x)))
         x = self.layer2(self.actvn(x)) # 64

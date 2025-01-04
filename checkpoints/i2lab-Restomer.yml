@@ -1,10 +1,10 @@
-name: Ours-NAFNet-with-PSF
+name: Ours-Restormer
 report_to: comet_ml
 num_gpu: 8
 seed: 10
 mixed_precision: !!str no
 allow_tf32: false
-tracker_project_name: Ours-NAFNet-with-PSF
+tracker_project_name: Ours-Restormer
 
 datasets:
   train:
@@ -36,7 +36,7 @@ datasets:
     scale: 1
     gt_size: 1024
     resize: 512
-
+    
     poisson_noise:
       peak: 1000
       peak_dc: 50
@@ -47,11 +47,17 @@ datasets:
 
 # network structures
 network:
-  type: NAFKNet
-  width: 32
-  enc_blk_nums: [1, 1, 1, 28]
-  middle_blk_num: 1
-  dec_blk_nums: [1, 1, 1, 1]
+  type: Restormer
+  inp_channels: 3
+  out_channels: 3
+  dim: 48
+  num_blocks: [4,6,6,8]
+  num_refinement_blocks: 4
+  heads: [1,2,4,8]
+  ffn_expansion_factor: 2.66
+  bias: False
+  LayerNorm_type: WithBias
+  dual_pixel_task: False
 
 # path
 path:
@@ -80,7 +86,7 @@ train:
     lr_warmup_steps: 500
     lr_num_cycles: 3
     lr_power: 1.0
-  loss: 1*PSNR_loss
+  loss: 1*L1
   max_train_steps: 120000
   gradient_accumulation_steps: 1
   num_train_epochs: 10
