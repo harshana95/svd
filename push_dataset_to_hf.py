@@ -11,9 +11,9 @@ dataset_name = os.path.basename(ds_dir)
 disable_caching()
 
 shutil.copyfile('./dataset/loading_script.py', join(ds_dir, f'{dataset_name}.py'))
-shutil.rmtree('./fff', ignore_errors=True)
-dataset = load_dataset(ds_dir, trust_remote_code=True, cache_dir='./fff')
-shutil.rmtree('./fff', ignore_errors=True)
+shutil.rmtree('./.cachehf', ignore_errors=True)
+dataset = load_dataset(ds_dir, trust_remote_code=True, cache_dir='./.cachehf')
+shutil.rmtree('./.cachehf', ignore_errors=True)
 print(f"Length of the created dataset {len(dataset)}")
 
 repoid = f"harshana95/{dataset_name}"

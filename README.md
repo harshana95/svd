@@ -25,6 +25,9 @@ To train the same model from  the repo using the code adapted to i2lab use the f
 
   * ```python train_i2lab_basicsr.py```
 
+### Baseline 2: [NAFNet](https://github.com/megvii-research/NAFNet)
+
+### Baseline 3: [Restormer](https://github.com/swz30/Restormer)
 
 ### PSF generation
 
