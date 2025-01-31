@@ -29,7 +29,7 @@ from LD.models.archs.loss import GANLoss, VGGLoss
 from dataset import create_dataset
 from models.learning_degradation import MultiscaleDiscriminatorModel
 from models.learning_degradation_with_psf import MSDI3Config, MSDI3Model
-from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image
+from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image, log_metrics
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
 
@@ -101,7 +101,7 @@ def log_validation(model, discriminator, dataloader, args, accelerator, step):
         lq = batch['lq']
         gt = batch['gt']
         with torch.no_grad():
-            out = model(lq)
+            out, y_hat, psfs_hat, weights_hat = model(lq)
         lq = lq.cpu().numpy()
         gt = gt.cpu().numpy()
         out = out.cpu().numpy()
@@ -111,6 +111,7 @@ def log_validation(model, discriminator, dataloader, args, accelerator, step):
             image1 = np.stack(image1)
             image1 = np.clip(image1, 0, 1)
             log_image(accelerator, image1, f'{idx}', step)  # image format (N,C,H,W)
+            log_metrics(gt[i], out[i], args.val.metrics, accelerator, step)
     model.train()
 
 def main(args):
@@ -141,11 +142,13 @@ def main(args):
     # ============================================================================================== 3. Load models
     if args.network.type == "MSDI3":
         psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
-        psfs_cropped = einops.rearrange(psfs_cropped, 'b c h w -> 1 (b c) h w')
+        weights_cropped = crop_arr(torch.from_numpy(basis_weights[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
         if args.datasets.train.resize is not None:
             psfs_cropped = torch.nn.functional.interpolate(psfs_cropped, (args.datasets.train.resize, args.datasets.train.resize))
-        psfs_cropped = psfs_cropped.numpy().tolist()
-        config = MSDI3Config(psfs=psfs_cropped)
+            weights_cropped = torch.nn.functional.interpolate(weights_cropped, (args.datasets.train.resize, args.datasets.train.resize))
+        psfs_cropped = einops.rearrange(psfs_cropped, 'c t h w -> 1 (c t) h w').numpy()
+        weights_cropped = einops.rearrange(weights_cropped, 'c t h w -> 1 (c t) h w').numpy()
+        config = MSDI3Config(psfs=psfs_cropped.tolist(), weights=weights_cropped.tolist())
         model = MSDI3Model(config)
     discriminator = MultiscaleDiscriminatorModel()
 
@@ -327,7 +330,9 @@ def main(args):
 
                 # compute_generator_loss
                 optimizer_g.zero_grad()
-                pred, fake_image = model(lq, gt)
+                pred, fake_image, psfs_hat, weights_hat = model(lq, gt)
+                losses['psf'] = L1(psfs_hat, model.psfs)
+                losses['weight'] = L1(weights_hat, model.weights)
 
                 pred_fake, pred_real = discriminate(discriminator, gt, fake_image, lq)
 
@@ -343,7 +348,7 @@ def main(args):
                 losses['VGG'] = criterionVGG(fake_image, lq) * 30
                 losses['l_pix'] = 10 * L1(pred, gt)
 
-                losses['all_g'] = losses['GAN'] + losses['GAN_Feat'] + losses['VGG'] + losses['l_pix']
+                losses['all_g'] = losses['GAN'] + losses['GAN_Feat'] + losses['VGG'] + losses['l_pix'] + losses['psf'] + losses['weight']
                 # losses['all_g'] += 0 * sum(p.sum() for p in model.parameters())
                 losses['all_g'].backward()
 
@@ -354,7 +359,7 @@ def main(args):
                 # compute_discriminator_loss
                 optimizer_d.zero_grad()
                 with torch.no_grad():
-                    _, _fake_image = model(lq, gt)
+                    _, _fake_image, psfs_hat, weights_hat = model(lq, gt)
                     _fake_image = _fake_image.detach()
                     _fake_image.requires_grad_()
                 pred_fake, pred_real = discriminate(discriminator, gt, _fake_image, lq)

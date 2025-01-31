@@ -120,9 +120,10 @@ class RestormerK(nn.Module):
 class RestormerKConfig(PretrainedConfig):
     model_type = "RestormerK"
 
-    def __init__(self, psfs=None, **kwargs):
+    def __init__(self, psfs=None, weights=None, **kwargs):
         super().__init__(**kwargs)
         self.psfs = psfs
+        self.weights = weights
         
 
 class RestormerKModel(PreTrainedModel):

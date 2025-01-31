@@ -1,12 +1,8 @@
 import argparse
-import functools
 import gc
-import logging
 import math
 import os
-import random
 import sys
-import time
 from pathlib import Path
 
 import einops
@@ -14,20 +10,25 @@ import yaml
 from torch.utils.data import DataLoader
 
 import numpy as np
-import scipy
 import torch
-from accelerate import Accelerator
 from accelerate.logging import get_logger
 from diffusers import get_scheduler
 from huggingface_hub import create_repo, hf_hub_download, upload_folder, delete_repo, repo_exists, whoami
 from tqdm import tqdm
 
+from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
+from torch import nn
+
 from dataset import create_dataset
-from models.NAFNet_with_psf import NAFKNetConfig, NAFKNetModel
+from models.MambaTM import MambaTM_noLPDConfig, MambaTM_noLPDModel
+from models.MambaTM_with_psf import MambaTMConfig, MambaTMModel
+from models.WienerDeconv import WienerDeconvolutionConfig, WienerDeconvolutionModel
 from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image, log_metrics
 from psf.svpsf import PSFSimulator
-from utils.utils import ordered_yaml
+from utils.utils import ordered_yaml, stack_images
 from utils.loss import Loss
+
 
 logger = get_logger(__name__)
 
@@ -41,6 +42,7 @@ def save_model_hook(models, weights, output_dir):
 
         class_name = model._get_name()
         saved[class_name] = 1 if class_name not in saved.keys() else saved[class_name] + 1
+        print(f"saving {class_name}")
         model.save_pretrained(os.path.join(output_dir, f"{class_name}_{saved[class_name]}"))
 
         i -= 1
@@ -53,8 +55,7 @@ def load_model_hook(models, input_dir):
         class_name = model._get_name()
         saved[class_name] = 1 if class_name not in saved.keys() else saved[class_name] + 1
         # m = importlib.import_module(model._get_name()) # load the module, will raise ImportError if module cannot be loaded
-        c = getattr(sys.modules[__name__],
-                    class_name)  # get the class, will raise AttributeError if class cannot be found
+        c = getattr(sys.modules[__name__], class_name)  # get the class, will raise AttributeError if class cannot be found
 
         # load diffusers style into model
         load_model = c.from_pretrained(os.path.join(input_dir, f"{class_name}_{saved[class_name]}"))
@@ -62,7 +63,7 @@ def load_model_hook(models, input_dir):
         del load_model
 
 
-def log_validation(model, dataloader, args, accelerator, step):
+def log_validation(model, wiener, dataloader, args, accelerator, step):
     gc.collect()
     torch.cuda.empty_cache()
     idx = 0
@@ -70,18 +71,39 @@ def log_validation(model, dataloader, args, accelerator, step):
     for batch in tqdm(dataloader):
         lq = batch['lq']
         gt = batch['gt']
+        
         with torch.no_grad():
-            out, psfs_hat, weights_hat = model(lq)
+            Y = wiener(lq)
+            Y = einops.rearrange(Y, 'b c n h w -> b n c h w')[:, :args.network.steps]
+            pred, LPD = model(lq, Y)
         lq = lq.cpu().numpy()
         gt = gt.cpu().numpy()
-        out = out.cpu().numpy()
+        out = pred.cpu().numpy()
+        Y = Y.cpu().numpy()
+        log_image(accelerator, einops.rearrange(Y, 'b n c h w -> (b n) c h w'), f'deconv_{idx}', step)
+        if step <=1 and idx == 0:
+            n_psfs = model.config.input_size[-1] - 1
+            psfs = model.psfs[0].cpu().numpy()[:n_psfs]  # t c h w
+            weights = model.weights[0].cpu().numpy()[:n_psfs]
+            log_image(accelerator, stack_images(psfs, 5, 4) , f'psf', -1)
+            log_image(accelerator, stack_images(weights, 5, 4), f'weight', -1)
         for i in range(len(gt)):
             idx += 1
-            image1 = [lq[i], gt[i], out[i]]
+            out_i = out[i] if model.model.output_last_only else out[i][-1]
+            pred_i = pred[i:i+1]
+            if args.network.output_last_only:
+                pred_i = pred_i[:, None]
+            with torch.no_grad():
+                pred_i = pred_i * model.weights * model.weight_scaling
+            pred_ft = torch.fft.fftn(pred_i, dim=(-2, -1))
+            psfs_ft = torch.fft.fftn(model.psfs, dim=(-2, -1))
+            blur = torch.sum(torch.fft.ifftshift(torch.fft.ifftn(pred_ft * psfs_ft, dim=(-2, -1)), dim=(-2,-1)).real, dim=1).detach().cpu().numpy()[0]
+            
+            image1 = [lq[i], gt[i], blur] + ([out[i][j] for j in range(out.shape[1])] if not model.model.output_last_only else [out_i])
             image1 = np.stack(image1)
             image1 = np.clip(image1, 0, 1)
             log_image(accelerator, image1, f'{idx}', step)  # image format (N,C,H,W)
-            log_metrics(gt[i], out[i], args.val.metrics, accelerator, step)
+            log_metrics(gt[i], out_i, args.val.metrics, accelerator, step)
     model.train()
 
 def main(args):
@@ -107,19 +129,27 @@ def main(args):
     psf_data = PSFSimulator.load_psfs(args.datasets.train.name, 'PSFs_with_basis.h5')
     basis_psfs = psf_data['basis_psfs'][:]  # [:] is used to load the whole array to memory
     basis_weights = psf_data['basis_weights'][:]
-
+    
     # ============================================================================================== 3. Load models
-    if args.network.type == "NAFKNet":
+    if args.network.type == "MambaTM":
         psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
         weights_cropped = crop_arr(torch.from_numpy(basis_weights[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
         if args.datasets.train.resize is not None:
             psfs_cropped = torch.nn.functional.interpolate(psfs_cropped, (args.datasets.train.resize, args.datasets.train.resize))
             weights_cropped = torch.nn.functional.interpolate(weights_cropped, (args.datasets.train.resize, args.datasets.train.resize))
-        psfs_cropped = einops.rearrange(psfs_cropped, 'c t h w -> 1 (c t) h w').numpy()
-        weights_cropped = einops.rearrange(weights_cropped, 'c t h w -> 1 (c t) h w').numpy()
-        config = NAFKNetConfig(**args.network, psfs=psfs_cropped.tolist(), weights=weights_cropped.tolist())
-        model = NAFKNetModel(config)
+        psfs_cropped = einops.rearrange(psfs_cropped, 'c t h w -> 1 c t h w').numpy()
+        weights_cropped = einops.rearrange(weights_cropped, 'c t h w -> 1 c t h w').numpy()
+        
+        n_psfs = args.network.steps
+        psfs_cropped = np.concatenate([psfs_cropped[:, :, :n_psfs], psfs_cropped[:, :, -1:]], axis=2)
+        weights_cropped = np.concatenate([weights_cropped[:, :, :n_psfs], weights_cropped[:, :, -1:]], axis=2)
 
+        config = MambaTMConfig(psfs=psfs_cropped.tolist(), weights=weights_cropped.tolist(), input_size=[*psfs_cropped.shape[-2:], args.network.steps+1], **args.network)
+        model = MambaTMModel(config)
+        
+        
+        wiener = WienerDeconvolutionModel(WienerDeconvolutionConfig(psfs=psfs_cropped.tolist(), return_frequency=False, do_pad=False))
+    
     # ========================================================================================== 4. setup for training
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
@@ -170,8 +200,7 @@ def main(args):
     if args.train.max_train_steps is None:
         args.train.max_train_steps = args.train.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
-    print(f"lr={args.train.optim.learning_rate},        betas={args.train.optim.adam_beta1, args.train.optim.adam_beta2},        weight_decay={args.train.optim.adam_weight_decay},        eps={args.train.optim.adam_epsilon}")
-    print(f"num_warmup_steps={args.train.scheduler.lr_warmup_steps},        num_training_steps={args.train.max_train_steps},        num_cycles={args.train.scheduler.lr_num_cycles},        power={args.train.scheduler.lr_power}")
+    
     lr_scheduler = get_scheduler(
         args.train.scheduler.type,
         optimizer=optimizer,
@@ -182,8 +211,8 @@ def main(args):
     )
     criterion = Loss(args.train.loss).to(accelerator.device)
 
-    model, optimizer, dataloader, test_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, dataloader, test_dataloader, lr_scheduler
+    model, wiener, optimizer, dataloader, test_dataloader, lr_scheduler = accelerator.prepare(
+        model, wiener, optimizer, dataloader, test_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -249,23 +278,54 @@ def main(args):
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
-    L1 = torch.nn.L1Loss()
+    L1 = nn.L1Loss()
     for epoch in range(first_epoch, args.train.num_train_epochs+1):
         for step, batch in enumerate(dataloader):
             with accelerator.accumulate(model):
                 """
                 Training step ========================================================================================= 
                 """
-                lq = batch['lq']
+                lq = batch['lq']  # we normalized to 0 to 1, make it -1 to +1?
                 gt = batch['gt']
-                
-                optimizer.zero_grad()
-                pred, psfs_hat, weights_hat = model(lq)
+                B = lq.shape[0]
 
+                optimizer.zero_grad()
+                Y = wiener(lq)
+                Y = einops.rearrange(Y, 'b c n h w -> b n c h w')[:, :args.network.steps]
+                
+                pred, LPD = model(lq, Y)
+                
+                # reconstruction loss
+                if not args.network.output_last_only:  # increase the dimension of gt and repeat to match predictions
+                    gt = gt[:, None].repeat(1, pred.shape[1], 1, 1, 1)
+                    gt = einops.rearrange(gt, 'b t c h w -> (b t) c h w')
+                    pred = einops.rearrange(pred, 'b t c h w -> (b t) c h w')
                 losses = criterion(pred, gt)
-                losses['psf'] = L1(psfs_hat, model.psfs)
-                losses['weight'] = L1(weights_hat, model.weights)
-                losses['all'] += losses['psf'] + losses['weight']
+                
+                # LPD loss
+                psfs = model.psfs
+                weights = model.weights
+                if model.psfs.shape[0] != B: # repeat and reshape weights and psfs to match LPD
+                    # psfs = einops.repeat(psfs, '1 t c h w -> b t c h w', b=B)
+                    weights = einops.repeat(weights, '1 t c h w -> b t c h w', b=B)
+                # psfs = einops.rearrange(psfs, 'b t c h w -> (b t) c h w')
+                weights = einops.rearrange(weights, 'b t c h w -> (b t) c h w')
+                losses['LPD_loss'] = L1(LPD, weights)
+                losses['all'] += 0.01*losses['LPD_loss']
+
+                # reblurring loss
+                if not args.network.output_last_only:
+                    pred_ft = einops.rearrange(pred, '(b t) c h w -> b t c h w', b=B)
+                else:
+                    pred_ft = pred[:, None]
+                pred_ft = pred_ft * model.weights*model.weight_scaling
+                pred_ft = torch.fft.fftn(pred_ft, dim=(-2, -1))
+                psfs_ft = torch.fft.fftn(model.psfs, dim=(-2, -1))
+                
+                blur = torch.sum(torch.fft.ifftshift(torch.fft.ifftn(pred_ft * psfs_ft, dim=(-2, -1)), dim=(-2,-1)).real, dim=1)
+                losses['reblur_loss'] = L1(blur, lq)
+                losses['all'] += 0.1*losses['reblur_loss']
+
                 accelerator.backward(losses['all'])
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01)
                 optimizer.step()
@@ -289,7 +349,7 @@ def main(args):
                             logger.info(f"Saved state to {save_path}")
 
                         if global_step % args.train.validation_steps == 0:
-                            log_validation(model, test_dataloader,
+                            log_validation(model, wiener, test_dataloader,
                                 args, accelerator, global_step,
                             )
                     global_step += 1
@@ -336,7 +396,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-opt', type=str, default="./checkpoints/basicsr/i2lab-MSDINet2e-Train.yml", help='Path to option YAML file.')
+    parser.add_argument('-opt', type=str, help='Path to option YAML file.')
     args = parser.parse_args()
     with open(args.opt, mode='r') as f:
         Loader, _ = ordered_yaml()

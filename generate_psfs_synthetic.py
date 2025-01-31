@@ -15,7 +15,7 @@ from utils.utils import generate_folder
 
 if __name__ == "__main__":
     DEBUG = False
-    kwargs = {'psf_type': 'gaussian', 'gaussian_type': 'elliptical', 'sigma1': 0.04, 'sigma2': 0.10, 'sigma_min': 0.04, 'chromatic': [0.0,0.5,0.9], 'chromatic_trans': [0.7,0.9,0.7]}
+    kwargs = {'psf_type': 'gaussian', 'gaussian_type': 'elliptical', 'sigma1': 0.08, 'sigma2': 0.20, 'sigma_min': 0.08, 'chromatic': [0.0,0.5,0.9], 'chromatic_trans': [0.7,0.9,0.7]}
     # kwargs = {'psf_type': 'motion'}
     """
     R: 620-750 nm  685
@@ -26,7 +26,7 @@ if __name__ == "__main__":
     parser.add_argument('--n_channels', type=int, default=3)
     parser.add_argument('--sensor_size', default=(4,4), action='store', type=float, nargs=2)
     parser.add_argument('--sensor_res', default=(1024,1024), action='store', type=int, nargs=2)
-    parser.add_argument('--max_psf_size', type=int, default=64)
+    parser.add_argument('--max_psf_size', type=int, default=128)
     parser.add_argument('--save_dir', default="")
     parser.add_argument('--ndata', type=int, default=256 * 256)
     parser.add_argument('--wv', action='store', type=int, nargs=3, default=[472.5, 532.8, 685])

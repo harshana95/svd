@@ -2,22 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from transformers import PreTrainedModel, PretrainedConfig
-from models.encoder import ConvEncoder
-from models.blocks import NAFBlock, SPADEResnetBlock, Up_ConvBlock
-
-class prior_upsampling(nn.Module):
-    def __init__(self, channels=[1024, 512, 256, 128, 64]):
-        super(prior_upsampling, self).__init__()
-        self.ups = nn.ModuleList()
-        for i in range(len(channels)-1):
-            self.ups.append(Up_ConvBlock(channels[i], channels[i+1]))
-
-    def forward(self, z):
-        ret = []
-        for up in self.ups:
-            z = up(z)
-            ret.append(z)
-        return ret[::-1]
+from models.blocks import NAFBlock
     
 class NAFNet(nn.Module):
 
@@ -34,8 +19,6 @@ class NAFNet(nn.Module):
         self.middle_blks = nn.ModuleList()
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
-
-        self.ad1_list = nn.ModuleList()
 
         chan = width
         for num in enc_blk_nums:
@@ -69,15 +52,12 @@ class NAFNet(nn.Module):
                     *[NAFBlock(chan) for _ in range(num)]
                 )
             )
-            self.ad1_list.append(
-                SPADEResnetBlock(chan, chan, "spectralspadesyncbatch3x3", label_nc=chan)
-            )
             
             
             
         self.padder_size = 2 ** len(self.encoders)
 
-    def forward(self, inp, latent_list):
+    def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
 
@@ -92,10 +72,9 @@ class NAFNet(nn.Module):
 
         x = self.middle_blks(x)
 
-        for decoder, up, ad, enc_skip, lat in zip(self.decoders, self.ups, self.ad1_list, encs[::-1], latent_list[::-1]):
-            tmp = ad(enc_skip, lat)
+        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
             x = up(x)
-            x = x + tmp #enc_skip
+            x = x + enc_skip
             x = decoder(x)
 
         x = self.ending(x)
@@ -127,19 +106,10 @@ class NAFNetModel(PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.net_prior = ConvEncoder(ndf=config.width)  # output is ndf*32
-        channels = [config.width * (2 ** i) for i in range(len(config.enc_blk_nums)+2)]
-        print(f"upsampling channels: {channels}")
-        self.prior_upsampling = prior_upsampling(channels[::-1])
-        
         self.model = NAFNet(img_channel=config.img_channel, width=config.width, 
                             middle_blk_num=config.middle_blk_num, enc_blk_nums=config.enc_blk_nums, dec_blk_nums=config.dec_blk_nums)
         self.init_weights()
 
     def forward(self, x):
-        prior_z = self.net_prior(x)
-        # print(f"x {x.shape} prior_z: {prior_z.shape}")
-        latent_list_inverse = self.prior_upsampling(prior_z)
-        # print(f"latent_list_inverse: {[s.shape for s in latent_list_inverse]}")
-        return self.model(x, latent_list_inverse[:-1])
+        return self.model(x)
         

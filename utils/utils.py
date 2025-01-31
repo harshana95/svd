@@ -1,6 +1,7 @@
 import os
 import shutil
 import cv2
+import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -229,6 +230,16 @@ def display_images(d, same_plot=None, independent_colorbar=False, row_limit=-1, 
         fig.colorbar(im, cax=cbar_ax)
     return fig
 
+def stack_images(arr, h, w):
+    # arr shape : N C H W
+    N, C, H, W = arr.shape
+    if N < h*w:
+        arr = np.concatenate([arr, np.zeros((h*w - N, C, H, W))], axis=0)
+    if N > h*w:
+        raise ValueError(f"N={N} > {h}x{w}, increase h or w")
+    arr = einops.rearrange(arr, "n c h w -> n h w c")
+    arr = einops.rearrange(arr, "(b1 b2) h w c -> (b1 h) (b2 w) c", b1=h)
+    return einops.rearrange(arr, "h w c -> c h w")
 
 # source: https://pytorch.org/vision/stable/auto_examples/plot_transforms.html#sphx-glr-auto-examples-plot-transforms-py
 def plot_timesteps(imgs, image_ori=None, with_orig=False, row_title=None, **imshow_kwargs):

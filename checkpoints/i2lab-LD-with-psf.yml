@@ -1,10 +1,10 @@
-name: Ours-MSDINet2e-with-PSF
+name: Ours-LD-with-PSF
 report_to: comet_ml
 num_gpu: 8
 seed: 10
 mixed_precision: !!str no
 allow_tf32: false
-tracker_project_name: Ours-MSDINet2e-with-PSF
+tracker_project_name: Ours-LD-with-PSF
 
 datasets:
   train:
@@ -101,9 +101,9 @@ val:
 
   metrics:
     psnr: # metric name, can be arbitrary
-      type: calculate_psnr
-      crop_border: 0
-      test_y_channel: false
+      crop: 30
+    mse:
+       crop: 30
 
 # logging settings
 logger:

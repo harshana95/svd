@@ -4,9 +4,8 @@ from torch import nn
 import torch.nn.functional as F
 from transformers import PreTrainedModel, PretrainedConfig
 
-from models.NAFNet import prior_upsampling
-from models.blocks import NAFBlock, SPADEResnetBlock, Up_ConvBlock
-from models.encoder import ConvEncoder
+from models.blocks import NAFBlock, SPADEResnetBlock
+from models.modules.Unets import DecodeCell, EncodeCell
 
 class NAFKNet(nn.Module):
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
@@ -74,7 +73,6 @@ class NAFKNet(nn.Module):
             x = down(x)
 
         x = self.middle_blks(x)
-
         for decoder, up, ad, enc_skip, lat in zip(self.decoders, self.ups, self.ad1_list, encs[::-1], latent_list[::-1]):
             tmp = ad(enc_skip, lat) # added
             x = up(x)
@@ -96,9 +94,11 @@ class NAFKNet(nn.Module):
 class NAFKNetConfig(PretrainedConfig):
     model_type = "NAFKNet"
 
-    def __init__(self, psfs=None, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[], **kwargs):
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[], **kwargs):
         super().__init__(**kwargs)
-        self.psfs = psfs
+        self.psfs = kwargs.get('psfs')
+        self.weights = kwargs.get('weights')
+        
         self.img_channel = img_channel
         self.width = width
         self.middle_blk_num = middle_blk_num
@@ -111,29 +111,26 @@ class NAFKNetModel(PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.psfs = nn.Parameter(torch.from_numpy((np.array(config.psfs, dtype=np.float32)+1)/2), requires_grad=False)
-        channels = [config.width * (2 ** i) for i in range(len(config.enc_blk_nums)+2)]
-        # print(f"upsampling channels: {channels}")
-
-        self.net_prior = ConvEncoder(ndf=config.width)  # output is ndf*32
-        self.prior_upsampling = prior_upsampling(channels[::-1])
+        self.psfs = nn.Parameter(torch.from_numpy((np.array(self.config.psfs, dtype=np.float32)+1)/2), requires_grad=False)
+        self.weights = nn.Parameter(torch.from_numpy(np.array(self.config.weights, dtype=np.float32)), requires_grad=False)
+        # channels = [config.width * (2 ** i) for i in range(len(config.enc_blk_nums)+2)]
         
-        self.net_prior_psfs = ConvEncoder(inc=self.psfs.shape[-3], ndf=config.width)  # output is ndf*32
-        self.prior_upsampling_psfs = prior_upsampling(channels[::-1])
+        n_psfs = self.psfs.shape[-3]  # 3 x N
+        n_features = 32
+        self.psfenc = EncodeCell(n_features, in_channel=n_psfs)
+        self.psfdec = DecodeCell(n_features, out_dim=n_psfs)
+        self.weienc = EncodeCell(n_features, in_channel=n_psfs)
+        self.weidec = DecodeCell(n_features, out_dim=n_psfs)
         
         self.model = NAFKNet(img_channel=config.img_channel, width=config.width, 
                             middle_blk_num=config.middle_blk_num, enc_blk_nums=config.enc_blk_nums, dec_blk_nums=config.dec_blk_nums)
         self.init_weights()
 
     def forward(self, x):
-        prior_z = self.net_prior(x)
-        latent_list_inverse = self.prior_upsampling(prior_z)
-        prior_z_psfs = self.net_prior_psfs(self.psfs)
-        latent_list_inverse_psfs = self.prior_upsampling_psfs(prior_z_psfs)
-
-        latent_list_inverse = latent_list_inverse[:-1]
-        latent_list_inverse_psfs = latent_list_inverse_psfs[:-1]
-        for i in range(len(latent_list_inverse)):
-            latent_list_inverse[i] = (latent_list_inverse[i] + latent_list_inverse_psfs[i])/2
-        return self.model(x, latent_list_inverse)
+        out1, out2, out3, h1 = self.psfenc(self.psfs)
+        psfs_hat = self.psfdec(h1, out3, out2, out1)
+        out4, out5, out6, h2 = self.weienc(self.weights)
+        weights_hat = self.weidec(h2, out6, out5, out4)
+        
+        return self.model(x, [out1+out4,out2+out5,out3+out6,h1+h2]), psfs_hat, weights_hat
         

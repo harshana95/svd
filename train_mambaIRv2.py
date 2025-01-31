@@ -1,12 +1,8 @@
 import argparse
-import functools
 import gc
-import logging
 import math
 import os
-import random
 import sys
-import time
 from pathlib import Path
 
 import einops
@@ -14,20 +10,21 @@ import yaml
 from torch.utils.data import DataLoader
 
 import numpy as np
-import scipy
 import torch
-from accelerate import Accelerator
 from accelerate.logging import get_logger
 from diffusers import get_scheduler
-from huggingface_hub import create_repo, hf_hub_download, upload_folder, delete_repo, repo_exists, whoami
+from huggingface_hub import create_repo, upload_folder, delete_repo, repo_exists, whoami
 from tqdm import tqdm
 
+from torch.utils.data import DataLoader
+
 from dataset import create_dataset
-from models.NAFNet_with_psf import NAFKNetConfig, NAFKNetModel
-from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image, log_metrics
+from models.MambaIRv2 import MambaIRv2Config, MambaIRv2Model
+from utils.common_utils import keep_last_checkpoints, initialize, log_image, log_metrics
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
 from utils.loss import Loss
+
 
 logger = get_logger(__name__)
 
@@ -70,8 +67,9 @@ def log_validation(model, dataloader, args, accelerator, step):
     for batch in tqdm(dataloader):
         lq = batch['lq']
         gt = batch['gt']
+        
         with torch.no_grad():
-            out, psfs_hat, weights_hat = model(lq)
+            out = model(lq)
         lq = lq.cpu().numpy()
         gt = gt.cpu().numpy()
         out = out.cpu().numpy()
@@ -88,7 +86,7 @@ def main(args):
     # ================================================================================================== 1. Initialize
     accelerator = initialize(args, logger)
 
-    # =============================================================================================== 2. Load dataset
+    # =============================================================================================== 3. Load dataset
     # create train and validation dataloaders
     train_set = create_dataset(args.datasets.train)
     dataloader = DataLoader(
@@ -107,19 +105,13 @@ def main(args):
     psf_data = PSFSimulator.load_psfs(args.datasets.train.name, 'PSFs_with_basis.h5')
     basis_psfs = psf_data['basis_psfs'][:]  # [:] is used to load the whole array to memory
     basis_weights = psf_data['basis_weights'][:]
+    
+    # ============================================================================================== 2. Load models
+    if args.network.type == "MambaIRv2":
+        config = MambaIRv2Config(**args.network)
+        model = MambaIRv2Model(config)
 
-    # ============================================================================================== 3. Load models
-    if args.network.type == "NAFKNet":
-        psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
-        weights_cropped = crop_arr(torch.from_numpy(basis_weights[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
-        if args.datasets.train.resize is not None:
-            psfs_cropped = torch.nn.functional.interpolate(psfs_cropped, (args.datasets.train.resize, args.datasets.train.resize))
-            weights_cropped = torch.nn.functional.interpolate(weights_cropped, (args.datasets.train.resize, args.datasets.train.resize))
-        psfs_cropped = einops.rearrange(psfs_cropped, 'c t h w -> 1 (c t) h w').numpy()
-        weights_cropped = einops.rearrange(weights_cropped, 'c t h w -> 1 (c t) h w').numpy()
-        config = NAFKNetConfig(**args.network, psfs=psfs_cropped.tolist(), weights=weights_cropped.tolist())
-        model = NAFKNetModel(config)
-
+    
     # ========================================================================================== 4. setup for training
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
@@ -170,8 +162,7 @@ def main(args):
     if args.train.max_train_steps is None:
         args.train.max_train_steps = args.train.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
-    print(f"lr={args.train.optim.learning_rate},        betas={args.train.optim.adam_beta1, args.train.optim.adam_beta2},        weight_decay={args.train.optim.adam_weight_decay},        eps={args.train.optim.adam_epsilon}")
-    print(f"num_warmup_steps={args.train.scheduler.lr_warmup_steps},        num_training_steps={args.train.max_train_steps},        num_cycles={args.train.scheduler.lr_num_cycles},        power={args.train.scheduler.lr_power}")
+    
     lr_scheduler = get_scheduler(
         args.train.scheduler.type,
         optimizer=optimizer,
@@ -210,8 +201,9 @@ def main(args):
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.train.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.train.max_train_steps}")
-    print(f"Initial learning rate: {optimizer.param_groups[0]['lr']}")
+    logger.info(f"  Initial learning rate: {optimizer.param_groups[0]['lr']}")
     
+
     global_step = 0
     first_epoch = 0
 
@@ -249,23 +241,19 @@ def main(args):
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
-    L1 = torch.nn.L1Loss()
     for epoch in range(first_epoch, args.train.num_train_epochs+1):
         for step, batch in enumerate(dataloader):
             with accelerator.accumulate(model):
                 """
                 Training step ========================================================================================= 
                 """
-                lq = batch['lq']
+                lq = batch['lq']  # we normalized to 0 to 1, make it -1 to +1?
                 gt = batch['gt']
                 
                 optimizer.zero_grad()
-                pred, psfs_hat, weights_hat = model(lq)
+                pred = model(lq)
 
                 losses = criterion(pred, gt)
-                losses['psf'] = L1(psfs_hat, model.psfs)
-                losses['weight'] = L1(weights_hat, model.weights)
-                losses['all'] += losses['psf'] + losses['weight']
                 accelerator.backward(losses['all'])
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01)
                 optimizer.step()
@@ -336,7 +324,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-opt', type=str, default="./checkpoints/basicsr/i2lab-MSDINet2e-Train.yml", help='Path to option YAML file.')
+    parser.add_argument('-opt', type=str, help='Path to option YAML file.')
     args = parser.parse_args()
     with open(args.opt, mode='r') as f:
         Loader, _ = ordered_yaml()

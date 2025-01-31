@@ -28,7 +28,7 @@ from LD.models.archs.discriminator import MultiscaleDiscriminator
 from LD.models.archs.loss import GANLoss, VGGLoss
 from dataset import create_dataset
 from models.learning_degradation import MSDI2EModel, MultiscaleDiscriminatorModel, MSDI2EConfig
-from utils.common_utils import keep_last_checkpoints, initialize, log_image
+from utils.common_utils import keep_last_checkpoints, initialize, log_image, log_metrics
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
 
@@ -105,10 +105,11 @@ def log_validation(model, discriminator, dataloader, args, accelerator, step):
         out = out.cpu().numpy()
         for i in range(len(gt)):
             idx += 1
-            image1 = [lq[i], gt[i], out[i]] if step < 10 else [out[i]]
+            image1 = [lq[i], gt[i], out[i]]
             image1 = np.stack(image1)
             image1 = np.clip(image1, 0, 1)
             log_image(accelerator, image1, f'{idx}', step)  # image format (N,C,H,W)
+            log_metrics(gt[i], out[i], args.val.metrics, accelerator, step)
     model.train()
 
 def main(args):

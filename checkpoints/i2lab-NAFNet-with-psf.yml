@@ -99,9 +99,8 @@ val:
 
   metrics:
     psnr: # metric name, can be arbitrary
-      type: calculate_psnr
-      crop_border: 0
-      test_y_channel: false
+      type: psnr
+      crop: 30
 
 # logging settings
 logger:

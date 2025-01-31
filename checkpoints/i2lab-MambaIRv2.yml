@@ -1,10 +1,10 @@
-name: Ours-Restormer
+name: Ours-MambaIRv2
 report_to: comet_ml
 num_gpu: 8
 seed: 10
 mixed_precision: !!str no
 allow_tf32: false
-tracker_project_name: Ours-Restormer
+tracker_project_name: Ours-MambaIRv2
 
 datasets:
   train:
@@ -14,7 +14,7 @@ datasets:
 
     gt_size: 1024
     scale: 1
-    resize: 512
+    resize: 128
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 4
@@ -35,7 +35,7 @@ datasets:
     split: validation
     scale: 1
     gt_size: 1024
-    resize: 512
+    resize: 128
     
     poisson_noise:
       peak: 1000
@@ -47,17 +47,37 @@ datasets:
 
 # network structures
 network:
-  type: Restormer
-  inp_channels: 3
-  out_channels: 3
-  dim: 48
-  num_blocks: [4,6,6,8]
-  num_refinement_blocks: 4
-  heads: [1,2,4,8]
-  ffn_expansion_factor: 2.66
-  bias: False
-  LayerNorm_type: WithBias
-  dual_pixel_task: False
+  type: MambaIRv2
+  # upscale: 1
+  # in_chans: 3
+  # img_size: 256  # this is used to calculate FLOPS, so no effect on training
+  # img_range: 1.
+  # embed_dim: 174
+  # d_state: 16
+  # depths: [6, 6, 6, 6, 6, 6, 6, 6, 6]
+  # num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6]
+  # window_size: 16
+  # inner_rank: 64
+  # num_tokens: 128
+  # convffn_kernel_size: 5
+  # mlp_ratio: 2.0
+  # upsampler: 'pixelshuffle'
+  # resi_connection: '1conv'
+
+  upscale: 1
+  in_chans: 3
+  img_size: 128
+  img_range: 1.
+  embed_dim: 174
+  d_state: 16
+  depths: [6, 6, 6,6,6,6]
+  num_heads: [6,6,6,6,6,6]
+  window_size: 16
+  inner_rank: 64
+  num_tokens: 128
+  convffn_kernel_size: 5
+  mlp_ratio: 2.
+
 
 # path
 path:
@@ -86,7 +106,7 @@ train:
     lr_warmup_steps: 500
     lr_num_cycles: 3
     lr_power: 1.0
-  loss: 1*L1
+  loss: 1*L1_Charbonnier_loss|0.02*Perceptual_loss
   max_train_steps: 120000
   gradient_accumulation_steps: 1
   num_train_epochs: 10
@@ -107,7 +127,7 @@ val:
     psnr: # metric name, can be arbitrary
       crop: 30
     mse:
-       crop: 30
+      crop: 30
 
 # logging settings
 logger:

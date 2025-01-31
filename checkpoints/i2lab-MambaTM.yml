@@ -1,10 +1,10 @@
-name: Ours-Restormer
+name: Ours-MambaTM_noLPD
 report_to: comet_ml
 num_gpu: 8
 seed: 10
 mixed_precision: !!str no
 allow_tf32: false
-tracker_project_name: Ours-Restormer
+tracker_project_name: Ours-MambaTM_noLPD
 
 datasets:
   train:
@@ -47,17 +47,11 @@ datasets:
 
 # network structures
 network:
-  type: Restormer
-  inp_channels: 3
-  out_channels: 3
-  dim: 48
-  num_blocks: [4,6,6,8]
-  num_refinement_blocks: 4
-  heads: [1,2,4,8]
-  ffn_expansion_factor: 2.66
-  bias: False
-  LayerNorm_type: WithBias
-  dual_pixel_task: False
+  type: MambaTM_noLPD
+  n_features: 16
+  n_blocks: 4
+  steps: 8
+  output_last_only: false
 
 # path
 path:
@@ -86,7 +80,7 @@ train:
     lr_warmup_steps: 500
     lr_num_cycles: 3
     lr_power: 1.0
-  loss: 1*L1
+  loss: 1*L1_Charbonnier_loss|0.02*Perceptual_loss
   max_train_steps: 120000
   gradient_accumulation_steps: 1
   num_train_epochs: 10

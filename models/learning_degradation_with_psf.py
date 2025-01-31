@@ -1,3 +1,4 @@
+from models.modules.Unets import DecodeCell, EncodeCell
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -35,7 +36,7 @@ class HINet(nn.Module):
             self.up_path_1.append(UNetUpBlock(prev_channels, (2**i)*wf, relu_slope))
             prev_channels = (2**i)*wf
 
-        self.last = conv3x3(prev_channels, in_chn, bias=True)
+        self.last = conv3x3(prev_channels, in_chn)
         
 
     def forward(self, x, latent_list):
@@ -106,37 +107,32 @@ class prior_upsampling(nn.Module):
         return latent_list
     
 class MSDI3(nn.Module):
-    def __init__(self, psfs):
-        super(MSDI3, self).__init__()
-        assert type(psfs) == list
-        self.psfs = nn.Parameter(torch.from_numpy((np.array(psfs, dtype=np.float32)+1)/2), requires_grad=False)
-        print(f"psfs: {self.psfs.shape} {self.psfs.min()}, {self.psfs.max()}")
-
+    def __init__(self):
+        super(MSDI3, self).__init__()        
+        wf = 64
         self.net_prior = ConvEncoder()
-        self.prior_upsampling = prior_upsampling()
-
-        self.net_prior_psfs = ConvEncoder(inc=self.psfs.shape[-3])
-        self.prior_upsampling_psfs = prior_upsampling()
-                    
-        self.inverse_generator = HINet()
-        self.generator = HINet()
+        self.prior_upsampling = prior_upsampling(wf=wf)
+        # self.net_prior_psfs = ConvEncoder(inc=self.psfs.shape[-3])
+        # self.prior_upsampling_psfs = prior_upsampling()                   
+        self.inverse_generator = HINet(wf=wf)
+        self.generator = HINet(wf=wf)
 
 
-    def forward(self, x, y):
+    def forward(self, x, y, additional_latent_list=None):
         prior_z = self.net_prior(x)
         latent_list_inverse = self.prior_upsampling(prior_z)
+        
+        # prior_z_psfs = self.net_prior_psfs(self.psfs)
+        # latent_list_inverse_psfs = self.prior_upsampling_psfs(prior_z_psfs)
+        if additional_latent_list:
+            for i in range(len(latent_list_inverse)):
+                latent_list_inverse[i] = (latent_list_inverse[i] + additional_latent_list[i])
 
-        prior_z_psfs = self.net_prior_psfs(self.psfs)
-        latent_list_inverse_psfs = self.prior_upsampling_psfs(prior_z_psfs)
-
-        for i in range(4):
-            latent_list_inverse[i] = (latent_list_inverse[i] + latent_list_inverse_psfs[i])/2
-
-        if y is None:
-            out = self.generator(x, latent_list_inverse)
-            return out
-        out_inverse = self.inverse_generator(y, latent_list_inverse)
         out = self.generator(x, latent_list_inverse)
+        if y is None:
+            out_inverse = None
+        else:
+            out_inverse = self.inverse_generator(y, latent_list_inverse)    
         return out, out_inverse
 
 
@@ -154,17 +150,33 @@ class MSDI3Config(PretrainedConfig):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.psfs = kwargs.get('psfs')  # pass the psfs as a list
+        self.weights = kwargs.get('weights')
 
 class MSDI3Model(PreTrainedModel):
     config_class = MSDI3Config
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = MSDI3(self.config.psfs)
+        self.psfs = nn.Parameter(torch.from_numpy((np.array(self.config.psfs, dtype=np.float32)+1)/2), requires_grad=False)
+        self.weights = nn.Parameter(torch.from_numpy(np.array(self.config.weights, dtype=np.float32)), requires_grad=False)
+        print(f"psfs: {self.psfs.shape} {self.psfs.min()}, {self.psfs.max()}")
+        print(f"weights: {self.weights.shape} {self.weights.min()}, {self.weights.max()}")
+
+        self.model = MSDI3()
+        n_psfs = self.psfs.shape[-3]  # 3 x N
+        n_features = 64
+        self.psfenc = EncodeCell(n_features, in_channel=n_psfs)
+        self.psfdec = DecodeCell(n_features, out_dim=n_psfs)
+        self.weienc = EncodeCell(n_features, in_channel=n_psfs)
+        self.weidec = DecodeCell(n_features, out_dim=n_psfs)
         self.init_weights()
 
     def forward(self, x, y=None):
-        if self.training:
-            return self.model(x, y)
-        else:
-            return self.model(x, y)
+        out1, out2, out3, h1 = self.psfenc(self.psfs)
+        psfs_hat = self.psfdec(h1, out3, out2, out1)
+        out4, out5, out6, h2 = self.weienc(self.weights)
+        weights_hat = self.weidec(h2, out6, out5, out4)
+        # n*1, n*2, n*4, n*8
+        x_hat, y_hat = self.model(x, y, [out1+out4,out2+out5,out3+out6,h1+h2])
+        return x_hat, y_hat, psfs_hat, weights_hat
+        

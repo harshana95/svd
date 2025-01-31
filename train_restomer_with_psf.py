@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 from dataset import create_dataset
 from models.Restormer_with_psf import RestormerKConfig, RestormerKModel
-from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image
+from utils.common_utils import crop_arr, keep_last_checkpoints, initialize, log_image, log_metrics
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
 from utils.loss import Loss
@@ -83,6 +83,7 @@ def log_validation(model, dataloader, args, accelerator, step):
             image1 = np.stack(image1)
             image1 = np.clip(image1, 0, 1)
             log_image(accelerator, image1, f'{idx}', step)  # image format (N,C,H,W)
+            log_metrics(gt[i], out[i], args.val.metrics, accelerator, step)
     model.train()
 
 def main(args):
@@ -112,11 +113,13 @@ def main(args):
     # ============================================================================================== 3. Load models
     if args.network.type == "RestormerK":
         psfs_cropped = crop_arr(torch.from_numpy(basis_psfs[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
-        psfs_cropped = einops.rearrange(psfs_cropped, 'b c h w -> 1 (b c) h w')
+        weights_cropped = crop_arr(torch.from_numpy(basis_weights[:, 0]).to(torch.float32), args.datasets.train.gt_size, args.datasets.train.gt_size)
         if args.datasets.train.resize is not None:
             psfs_cropped = torch.nn.functional.interpolate(psfs_cropped, (args.datasets.train.resize, args.datasets.train.resize))
-        psfs_cropped = psfs_cropped.numpy().tolist()
-        config = RestormerKConfig(**args.network, psfs=psfs_cropped)
+            weights_cropped = torch.nn.functional.interpolate(weights_cropped, (args.datasets.train.resize, args.datasets.train.resize))
+        psfs_cropped = einops.rearrange(psfs_cropped, 'c t h w -> 1 (c t) h w').numpy()
+        weights_cropped = einops.rearrange(weights_cropped, 'c t h w -> 1 (c t) h w').numpy()
+        config = RestormerKConfig(**args.network, psfs=psfs_cropped.tolist(), weights=weights_cropped.tolist())
         model = RestormerKModel(config)
 
     # ========================================================================================== 4. setup for training

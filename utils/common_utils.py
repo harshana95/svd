@@ -4,6 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import cv2
 import diffusers
 import einops
 import numpy as np
@@ -15,6 +16,7 @@ from accelerate.utils import ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, repo_exists, delete_repo, whoami
 from torch.fft import fft2, ifftshift, ifft2
 
+from skimage.metrics import structural_similarity as ssim
 
 def log_image(accelerator, formatted_images, name, step):
     name += '.png'
@@ -28,6 +30,54 @@ def log_image(accelerator, formatted_images, name, step):
         else:
             raise Exception(f"image logging not implemented for {tracker.name}")
 
+def log_metrics(img1, img2, metrics, accelerator, step):
+    ret = {}
+    img1 = einops.rearrange(img1, 'c h w -> h w c')
+    img2 = einops.rearrange(img2, 'c h w -> h w c')
+    for metric in metrics:
+        if metric == 'psnr':
+            out = calculate_psnr(img1, img2, metrics[metric]["crop"])
+        elif metric == 'ssim':
+            out = calculate_ssim(img1, img2, metrics[metric]["crop"])
+        elif metric == 'mse':
+            out = calculate_mse(img1, img2, metrics[metric]["crop"])
+        else:
+            raise Exception(f"Unknown metric {metric}")
+        ret[metric]= out
+    for tracker in accelerator.trackers:
+        if tracker.name == "tensorboard":
+            raise NotImplementedError()
+        elif tracker.name == "wandb":
+            raise NotImplementedError()
+        elif tracker.name == "comet_ml":
+            tracker.writer.log_metrics(ret, step=step)
+        else:
+            raise Exception(f"image logging not implemented for {tracker.name}")
+
+        
+
+def calculate_psnr(img1, img2, crop=30):
+    mse = calculate_mse(img1*255, img2*255, crop=crop)
+    if mse == 0:
+        return float('inf')
+    psnr = 20 * np.log10(255.0 / np.sqrt(mse))
+    return psnr
+
+
+def calculate_mse(img1, img2, crop=30):
+    return np.mean((img1[crop:-crop, crop:-crop] - img2[crop:-crop, crop:-crop]) ** 2)
+
+def calculate_ssim(img1, img2, crop=30):
+    # Ensure the images are in grayscale
+    if len(img1.shape) == 3:
+        img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    if len(img2.shape) == 3:
+        img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+    img1 = cv2.resize(img1, (256,256))
+    img2 = cv2.resize(img2, (256, 256))
+    # Compute SSIM between the two images
+    ssim_value, ssim_map = ssim(img1[crop:-crop, crop:-crop], img2[crop:-crop, crop:-crop], full=True, win_size=7)
+    return ssim_value, ssim_map
 
 def fftn(x):
     x_fft = torch.fft.fftn(x, dim=[-2, -1])

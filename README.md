@@ -13,6 +13,7 @@ by changing the ```datasets.train.name``` parameter on the config file (```.yml`
 
 * Update ```.comet.config``` file with your API key
 * Download any pretrained models to ```checkpoints``` folder if required
+* Use ```accelerate``` instead of ```python``` to launch the scripts if your're using more than 1 GPU
 
 ### Baseline 1: [Learning degradation](https://github.com/dasongli1/Learning_degradation)
 To run the training scripts of the existing code from the repo with

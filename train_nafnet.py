@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 from dataset import create_dataset
 from models.NAFNet import NAFNetConfig, NAFNetModel
-from utils.common_utils import keep_last_checkpoints, initialize, log_image
+from utils.common_utils import keep_last_checkpoints, initialize, log_image, log_metrics
 from psf.svpsf import PSFSimulator
 from utils.utils import ordered_yaml
 from utils.loss import Loss
@@ -83,6 +83,7 @@ def log_validation(model, dataloader, args, accelerator, step):
             image1 = np.stack(image1)
             image1 = np.clip(image1, 0, 1)
             log_image(accelerator, image1, f'{idx}', step)  # image format (N,C,H,W)
+            log_metrics(gt[i], out[i], args.val.metrics, accelerator, step)
     model.train()
 
 def main(args):
